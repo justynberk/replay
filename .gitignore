@@ -1,0 +1,17 @@
+node_modules/
+dist/
+.replay-data/
+.env
+.env.*
+!.env.example
+*.log
+.DS_Store
+Thumbs.db
+research/
+app/qa/
+app/design-qa.md
+app/BUILD-CONTRACT.md
+app/AGENTS.md
+app/public/assets/demo-asset-prompts.json
+releases/
+docs/release-verification.local.md

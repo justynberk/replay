@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Replay browser media smoke test</title>
+  <style>
+    :root{color-scheme:dark;font-family:Inter,system-ui,sans-serif;color:#e9edf2;background:#171b20}*{box-sizing:border-box}body{max-width:1040px;margin:0 auto;padding:36px 24px}h1{font-size:28px;letter-spacing:-.7px;font-weight:550;margin:8px 0 12px}p{color:#a1adbb;font-size:13px;line-height:1.7;max-width:800px}.eyebrow{font-size:10px;letter-spacing:1.6px;color:#d4b47b}button{font:inherit;font-size:13px;font-weight:600;border:1px solid #e5b05a;border-radius:7px;padding:12px 17px;background:#f3bd60;color:#171b20;cursor:pointer}button:disabled{opacity:.5;cursor:wait}.run-row{display:flex;align-items:center;gap:16px;margin:25px 0}.status{font-size:13px;color:#a5b2c1}.status.pass{color:#b7d2a3}.status.fail{color:#eeb4a6}.surfaces{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:24px}.surface{background:#20242b;border:1px solid #3a424c;border-radius:10px;padding:13px;min-width:0}.surface h2{font-size:12px;font-weight:500;color:#bdc7d4;margin:0 0 10px}.surface canvas,.surface video{width:100%;aspect-ratio:16/9;background:#0c1015;border-radius:5px;display:block;object-fit:contain}.source-small{position:absolute;left:-9999px;top:0;width:240px;height:240px}ol{list-style:none;padding:0;margin:26px 0;display:grid;gap:8px}li{display:grid;grid-template-columns:70px 1fr;gap:9px;padding:11px 13px;border:1px solid #3b424b;border-radius:6px;background:#20242b;font-size:12px;line-height:1.65}li strong{font-size:10px;letter-spacing:.7px;color:#a4afbb}li.pass strong{color:#b7d2a3}li.fail strong{color:#edb4a5}li.running strong{color:#f3bd60}pre{background:#11171d;border:1px solid #3b424b;border-radius:7px;padding:15px;white-space:pre-wrap;overflow-wrap:anywhere;font-size:11px;line-height:1.7;color:#a6b3c3}.limitations{margin-top:20px;font-size:11px;color:#8796a8}a{color:#e6bd78}@media(max-width:650px){.surfaces{grid-template-columns:1fr}.run-row{align-items:flex-start;flex-direction:column}body{padding:24px 16px}}
+  </style>
+</head>
+<body>
+  <span class="eyebrow">LOCAL VERIFICATION · SYNTHETIC MEDIA</span>
+  <h1>Browser capture and recovery smoke test</h1>
+  <p>This creates a moving test pattern and quiet synthetic audio inside the browser. It records four tracks, pauses and resumes them, recovers the stored chunks through Replay's real IndexedDB helper, imports them through the real local API, and checks playback. The test recording is archived afterward.</p>
+  <p>No camera, microphone, screen-sharing, or personal media permissions are requested. Nothing runs until you press the button.</p>
+  <div class="run-row"><button id="run" type="button">Run synthetic media test</button><span id="status" class="status" role="status" aria-live="polite">Ready. No test has run.</span></div>
+  <div class="surfaces"><section class="surface"><h2>Synthetic source</h2><canvas id="source" width="640" height="360"></canvas></section><section class="surface"><h2 id="playback-title">Recovered and imported playback</h2><video id="playback" controls muted playsinline></video></section></div>
+  <canvas id="camera-source" class="source-small" width="240" height="240" aria-hidden="true"></canvas>
+  <ol id="results" aria-live="polite"></ol>
+  <pre id="details">The result will distinguish browser media verification from real device capture.</pre>
+  <p class="limitations">This verifies actual browser-produced media, local recovery and import. It does not verify OS camera or screen permissions, physical microphones, system audio routing, a browser crash, or cross-device compatibility.</p>
+  <p><a href="/">Back to Replay</a></p>
+
+  <script type="module">
+    import { saveRecordingSession, saveRecordingChunk, listRecordingSessions, recoverRecordingSession, deleteRecordingSession, recordingMimeType } from '/src/components/recorder-storage.js';
+
+    const runButton = document.querySelector('#run');
+    const status = document.querySelector('#status');
+    const results = document.querySelector('#results');
+    const details = document.querySelector('#details');
+    const canvas = document.querySelector('#source');
+    const cameraCanvas = document.querySelector('#camera-source');
+    const playback = document.querySelector('#playback');
+    const assert = (condition, message) => { if (!condition) throw new Error(message); };
+    const delay = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
+
+    function log(label, state = 'pass') {
+      const item = document.createElement('li'); item.className = state;
+      const badge = document.createElement('strong'); badge.textContent = state.toUpperCase();
+      const text = document.createElement('span'); text.textContent = label;
+      item.append(badge, text); results.append(item);
+    }
+
+    function waitForEvent(target, eventName, timeout = 15000) {
+      return new Promise((resolve, reject) => {
+        let timer;
+        const clean = () => { clearTimeout(timer); target.removeEventListener(eventName, done); target.removeEventListener('error', failed); };
+        const done = event => { clean(); resolve(event); };
+        const failed = () => { clean(); reject(new Error(`Media reported an error while waiting for ${eventName}.`)); };
+        timer = setTimeout(() => { clean(); reject(new Error(`Timed out waiting for ${eventName}.`)); }, timeout);
+        target.addEventListener(eventName, done, { once: true }); target.addEventListener('error', failed, { once: true });
+      });
+    }
+
+    async function request(path, options = {}) {
+      const response = await fetch(`/api${path}`, options);
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.error || `Local API failed with status ${response.status}.`);
+      return body;
+    }
+
+    async function digest(blob) {
+      const hash = await crypto.subtle.digest('SHA-256', await blob.arrayBuffer());
+      return [...new Uint8Array(hash)].map(value => value.toString(16).padStart(2, '0')).join('');
+    }
+
+    function drawSource(time) {
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = '#182b3d'; ctx.fillRect(0, 0, 640, 360);
+      ctx.fillStyle = '#e9edf2'; ctx.font = '600 26px system-ui'; ctx.fillText('REPLAY / SYNTHETIC TEST', 28, 49);
+      ctx.font = '16px system-ui'; ctx.fillStyle = '#a6b9cc'; ctx.fillText('Moving canvas + generated audio', 28, 80);
+      for (let row = 0; row < 4; row++) for (let col = 0; col < 10; col++) { ctx.fillStyle = (row + col) % 2 ? '#405a6e' : '#2c4054'; ctx.fillRect(28 + col * 58, 110 + row * 42, 52, 34); }
+      ctx.fillStyle = '#f3bd60'; ctx.fillRect(28 + (time * .13 % 530), 286, 52, 33);
+      ctx.fillStyle = '#d1d9e3'; ctx.font = '13px monospace'; ctx.fillText(`GENERATED FRAME ${Math.floor(time / 16.67)}`, 28, 345);
+      const cam = cameraCanvas.getContext('2d'); cam.fillStyle = '#354d40'; cam.fillRect(0, 0, 240, 240);
+      cam.fillStyle = '#bccba5'; cam.beginPath(); cam.arc(120, 85, 35 + Math.sin(time / 300) * 3, 0, Math.PI * 2); cam.fill();
+      cam.fillRect(67, 137, 106, 61); cam.fillStyle = '#f2f1e9'; cam.font = '14px system-ui'; cam.textAlign = 'center'; cam.fillText('SYNTHETIC CAMERA', 120, 224);
+    }
+    drawSource(0);
+
+    async function checkPlayback(url, label) {
+      playback.pause();
+      const metadata = waitForEvent(playback, 'loadedmetadata');
+      playback.src = url; playback.load();
+      await metadata;
+      assert(playback.videoWidth === 640 && playback.videoHeight === 360, `${label} did not decode the expected 640 × 360 picture.`);
+      playback.currentTime = 0;
+      await playback.play();
+      const start = playback.currentTime;
+      await delay(550);
+      const advance = playback.currentTime - start;
+      playback.pause();
+      assert(advance > .15, `${label} loaded, but its playback clock did not advance.`);
+      assert(!playback.error, `${label} returned a decoding error.`);
+      return { videoWidth: playback.videoWidth, videoHeight: playback.videoHeight, clockAdvance: Number(advance.toFixed(3)), duration: Number.isFinite(playback.duration) ? Number(playback.duration.toFixed(3)) : 'Not finalized in browser draft' };
+    }
+
+    runButton.addEventListener('click', async () => {
+      if (runButton.disabled) return;
+      runButton.disabled = true; status.className = 'status'; status.textContent = 'Running real browser media checks…'; results.replaceChildren();
+      const report = { state: 'running', synthetic: true, startedAt: new Date().toISOString(), checks: {}, assetId: null, archived: false };
+      details.textContent = JSON.stringify(report, null, 2);
+      const sessionId = crypto.randomUUID();
+      const streams = [], recorders = [], writes = [], urls = [];
+      let context, animation, recordingError, failure, sessionSaved = false;
+      try {
+        assert(globalThis.MediaRecorder && canvas.captureStream && globalThis.AudioContext, 'This browser does not support the media APIs required by this test.');
+        context = new AudioContext(); await context.resume();
+        assert(context.state === 'running', 'The audio context did not start from the button gesture.');
+        const health = await request('/health');
+        assert(health.capabilities?.ffmpeg && health.capabilities?.ffprobe, 'The local import service needs FFmpeg and ffprobe.');
+        log('MediaRecorder, canvas capture, AudioContext and local import tools are available.');
+
+        const screen = canvas.captureStream(24), camera = cameraCanvas.captureStream(24);
+        const mix = context.createMediaStreamDestination(), microphone = context.createMediaStreamDestination(), system = context.createMediaStreamDestination();
+        for (const [frequency, destination] of [[220, microphone], [440, system]]) {
+          const oscillator = context.createOscillator(), gain = context.createGain();
+          oscillator.frequency.value = frequency; gain.gain.value = .025;
+          oscillator.connect(gain); gain.connect(destination); gain.connect(mix); oscillator.start();
+        }
+        const video = new MediaStream([...screen.getVideoTracks(), ...mix.stream.getAudioTracks()]);
+        streams.push(screen, camera, mix.stream, microphone.stream, system.stream, video);
+        const targets = { video, camera, microphone: microphone.stream, system: system.stream };
+        const session = { id: sessionId, title: 'Browser media smoke test (synthetic)', createdAt: Date.now(), duration: 0, mode: 'screen-camera', synthetic: true };
+        await saveRecordingSession(session); sessionSaved = true;
+        let memoryChunks = {};
+        const totals = {};
+        for (const [kind, stream] of Object.entries(targets)) {
+          const type = recordingMimeType(kind === 'microphone' || kind === 'system');
+          const recorder = new MediaRecorder(stream, { ...(type ? { mimeType: type } : {}), ...(kind === 'video' ? { videoBitsPerSecond: 1000000 } : {}) });
+          memoryChunks[kind] = []; totals[kind] = { chunks: 0, bytes: 0, mimeType: recorder.mimeType };
+          recorder.finished = waitForEvent(recorder, 'stop', 20000);
+          recorder.addEventListener('error', event => { recordingError = event.error || new Error(`${kind} recorder failed.`); });
+          recorder.addEventListener('dataavailable', event => {
+            if (!event.data.size) return;
+            const index = memoryChunks[kind].length; memoryChunks[kind].push(event.data); totals[kind].chunks++; totals[kind].bytes += event.data.size;
+            writes.push(saveRecordingChunk({ sessionId, kind, index, data: event.data }));
+          });
+          recorders.push(recorder);
+        }
+        const animate = time => { drawSource(time); animation = requestAnimationFrame(animate); };
+        animation = requestAnimationFrame(animate);
+        for (const recorder of recorders) recorder.start(400);
+        const firstStarted = performance.now();
+        log('Recording independent synthetic video, camera, microphone and system tracks.', 'running');
+        await delay(1400);
+        const paused = recorders.map(recorder => waitForEvent(recorder, 'pause', 5000));
+        for (const recorder of recorders) recorder.pause();
+        await Promise.all(paused);
+        assert(recorders.every(recorder => recorder.state === 'paused'), 'All independent recorders did not enter paused state.');
+        const pauseStarted = performance.now(); await delay(700); const pauseLength = performance.now() - pauseStarted;
+        log('All four MediaRecorders paused for 700 ms without requesting any device permissions.');
+        const resumed = recorders.map(recorder => waitForEvent(recorder, 'resume', 5000));
+        for (const recorder of recorders) recorder.resume();
+        await Promise.all(resumed);
+        assert(recorders.every(recorder => recorder.state === 'recording'), 'All independent recorders did not resume.');
+        await delay(1400);
+        const expectedDuration = (performance.now() - firstStarted - pauseLength) / 1000;
+        for (const recorder of recorders) recorder.stop();
+        await Promise.all(recorders.map(recorder => recorder.finished));
+        await Promise.all(writes);
+        if (recordingError) throw recordingError;
+        cancelAnimationFrame(animation); animation = null;
+        await saveRecordingSession({ ...session, duration: expectedDuration });
+        assert(Object.values(totals).every(track => track.chunks >= 2 && track.bytes > 0), 'One or more tracks did not produce multiple real media chunks.');
+        report.checks.recordedTracks = totals; report.checks.expectedActiveSeconds = Number(expectedDuration.toFixed(3));
+        log('Pause/resume and finalization produced multiple nonempty chunks for every track.');
+
+        const originalHashes = {};
+        for (const [kind, chunks] of Object.entries(memoryChunks)) originalHashes[kind] = await digest(new Blob(chunks, { type: chunks[0].type }));
+        memoryChunks = null;
+        const sessions = await listRecordingSessions();
+        assert(sessions.some(item => item.id === sessionId), 'The recovery session was not persisted.');
+        const recovered = await recoverRecordingSession(sessionId);
+        const recoveredHashes = {};
+        for (const kind of ['video', 'camera', 'microphone', 'system']) {
+          assert(recovered[kind]?.size === totals[kind].bytes, `${kind} recovered byte count did not match.`);
+          recoveredHashes[kind] = await digest(recovered[kind]);
+          assert(recoveredHashes[kind] === originalHashes[kind], `${kind} IndexedDB recovery altered the media bytes.`);
+        }
+        report.checks.recoveryHashesMatch = true;
+        log('Actual IndexedDB recovery rebuilt all four streams byte-for-byte after discarding the in-memory chunk lists.');
+
+        const blobUrl = URL.createObjectURL(recovered.video); urls.push(blobUrl);
+        document.querySelector('#playback-title').textContent = 'Recovered browser recording';
+        report.checks.recoveredPlayback = await checkPlayback(blobUrl, 'Recovered browser video');
+        log('Recovered video decoded at 640 × 360 and its playback clock advanced.');
+
+        const form = new FormData();
+        for (const [kind, blob] of Object.entries(recovered)) form.append(kind, blob, `${kind}.${blob.type.includes('mp4') ? 'mp4' : 'webm'}`);
+        form.append('title', `Browser media smoke test (synthetic) ${new Date().toISOString()}`); form.append('sample', 'true');
+        const asset = await request('/assets/import', { method: 'POST', body: form });
+        report.assetId = asset.id;
+        assert(asset.id && asset.mediaUrl && asset.cameraUrl && asset.microphoneUrl && asset.systemUrl, 'The imported asset did not retain all four source URLs.');
+        assert(asset.width === 640 && asset.height === 360, 'The imported source dimensions changed unexpectedly.');
+        assert(Number.isFinite(asset.duration) && asset.duration > 1.8 && Math.abs(asset.duration - expectedDuration) < .4, `Imported duration ${asset.duration} did not match the active recording time ${expectedDuration.toFixed(3)}.`);
+        assert(asset.waveform?.some(value => Math.abs(value) > .001), 'The imported mixed audio produced no measurable waveform.');
+        report.checks.importedAsset = { id: asset.id, duration: asset.duration, width: asset.width, height: asset.height, sourceTracks: 4, waveformSamples: asset.waveform.length };
+        log(`Real multipart import succeeded with four source tracks and ${asset.duration.toFixed(3)} seconds of finalized video.`);
+
+        document.querySelector('#playback-title').textContent = 'Imported local asset playback';
+        report.checks.importedPlayback = await checkPlayback(asset.mediaUrl, 'Imported local video');
+        assert(Number.isFinite(playback.duration), 'The imported video still has an unknown duration.');
+        log('Imported video loaded through its actual media URL and played with a finite duration.');
+        report.state = 'passed';
+      } catch (error) {
+        failure = error; report.state = 'failed'; report.error = error.message || String(error); log(report.error, 'fail');
+      } finally {
+        if (animation) cancelAnimationFrame(animation);
+        for (const recorder of recorders) if (recorder.state !== 'inactive') { try { recorder.stop(); } catch {} }
+        await Promise.allSettled(recorders.map(recorder => recorder.finished));
+        await Promise.allSettled(writes);
+        for (const stream of streams) stream.getTracks().forEach(track => track.stop());
+        await context?.close().catch(() => {});
+        playback.pause();
+        for (const url of urls) URL.revokeObjectURL(url);
+        if (report.assetId) {
+          try {
+            await request(`/assets/${report.assetId}`, { method: 'DELETE' });
+            const archived = await request(`/assets/${report.assetId}`);
+            assert(archived.archived === true, 'The test asset was not archived.');
+            report.archived = true; log('Synthetic test asset archived through the real API.');
+          } catch (error) { failure = error; report.state = 'failed'; report.cleanupError = error.message; log(`Cleanup failed: ${error.message} Test asset: ${report.assetId}`, 'fail'); }
+        }
+        if (sessionSaved) {
+          try {
+            await deleteRecordingSession(sessionId);
+            const remaining = await listRecordingSessions();
+            assert(!remaining.some(item => item.id === sessionId), 'The synthetic recovery draft remained after cleanup.');
+            log('Only this test session was removed from recovery storage. Existing drafts were untouched.');
+          } catch (error) { failure = error; report.state = 'failed'; report.recoveryCleanupError = error.message; log(`Recovery cleanup failed: ${error.message}`, 'fail'); }
+        }
+        report.finishedAt = new Date().toISOString();
+        details.textContent = JSON.stringify(report, null, 2);
+        status.className = `status ${failure ? 'fail' : 'pass'}`;
+        status.textContent = failure ? 'FAILED. See the exact failed check below.' : 'PASSED. Browser media, recovery, import, playback and cleanup verified.';
+        runButton.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>

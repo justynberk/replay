@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.replay-data/
+.env
+.env.*
+!.env.example
+*.log
+qa/

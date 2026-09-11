@@ -1,0 +1,28 @@
+.export-job-heading { margin: 0; font: inherit; }
+.export-job-toggle {
+  display: flex; align-items: center; gap: 11px; width: 100%; min-height: 80px;
+  padding: 16px; text-align: left; border-radius: 9px;
+  transition: background-color 150ms;
+}
+.export-job-toggle:hover { background: var(--theme-hover, #292f37); }
+.export-job-toggle:focus-visible { outline-offset: -3px; }
+.export-job-label { flex: 1; min-width: 0; }
+.export-job-label > strong {
+  display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 13px; font-weight: 550; color: var(--text); line-height: 1.5;
+}
+.export-job-meta { display: flex; flex-wrap: wrap; gap: 3px 6px; margin-top: 5px; font-size: 11px; line-height: 1.6; color: var(--muted); }
+.export-job-status { font-size: 10px; font-weight: 500; padding: 4px 7px; border: 1px solid var(--border); border-radius: 5px; color: var(--muted); white-space: nowrap; }
+.export-job-status-completed { color: var(--theme-success-ink, #b0c2a0); }
+.export-job-status-failed { color: var(--danger); }
+.export-job-chevron { color: var(--muted); transition: transform 150ms; }
+.export-job-toggle[aria-expanded='true'] .export-job-chevron { transform: rotate(180deg); }
+.export-job-details { padding: 0 16px 16px; }
+.export-job-details > div:first-child { margin-top: 0 !important; padding-top: 10px !important; }
+@media (max-width: 600px) {
+  .export-job-toggle { padding: 13px 12px; gap: 8px; }
+  .export-job-label > strong { font-size: 12px; }
+  .export-job-meta { font-size: 10px; }
+  .export-job-status { padding: 4px 5px; }
+  .export-job-details { padding-inline: 12px; }
+}
