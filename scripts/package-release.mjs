@@ -2,11 +2,11 @@ import { createRequire } from 'node:module';
 import { createWriteStream } from 'node:fs';
 import { lstat, mkdir, readFile, readdir } from 'node:fs/promises';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const root=fileURLToPath(new URL('../',import.meta.url));
 const require=createRequire(new URL('../app/package.json',import.meta.url));
-const { ZipArchive }=await import(require.resolve('archiver'));
+const { ZipArchive }=await import(pathToFileURL(require.resolve('archiver')).href);
 const {version}=JSON.parse(await readFile(path.join(root,'package.json'),'utf8'));
 const files=[];
 async function collect(relative){
