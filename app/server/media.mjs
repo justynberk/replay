@@ -9,6 +9,15 @@ export const FFMPEG = process.env.REPLAY_FFMPEG || 'ffmpeg';
 export const FFPROBE = process.env.REPLAY_FFPROBE || 'ffprobe';
 export const FONT = process.env.REPLAY_FONT || '/System/Library/Fonts/Supplemental/Arial.ttf';
 
+let filterScriptOption;
+async function compositionScriptOption() {
+  // New FFmpeg builds load option values from files with the slash syntax.
+  // Keep the legacy flag for distribution builds that still provide it.
+  filterScriptOption ??= run(FFMPEG, ['-hide_banner', '-h', 'full']).then(({ stdout }) =>
+    /^-filter_complex_script\s/m.test(stdout) ? '-filter_complex_script' : '-/filter_complex');
+  return filterScriptOption;
+}
+
 export function run(command, args, { signal, timeout = 120000, onProgress, maxBytes = 8 * 1024 * 1024 } = {}) {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) return reject(new Error('Cancelled'));
@@ -223,7 +232,7 @@ export async function renderMaster(asset, sourcePath, directory, options, signal
   const crf = { high:18, balanced:23, small:29 }[options.quality] || 23;
   const filterFile = path.join(directory, 'composition.ffscript');
   await writeFile(filterFile, filters.join(';'));
-  args.push('-filter_complex_threads','2','-filter_complex_script',filterFile,'-map','[outv]','-map','[outa]','-c:v','libx264','-preset','veryfast','-crf',String(crf),'-pix_fmt','yuv420p','-c:a','aac','-b:a','192k','-ac','2');
+  args.push('-filter_complex_threads','2',await compositionScriptOption(),filterFile,'-map','[outv]','-map','[outa]','-c:v','libx264','-preset','veryfast','-crf',String(crf),'-pix_fmt','yuv420p','-c:a','aac','-b:a','192k','-ac','2');
   if(options.frameRate)args.push('-r',String(options.frameRate),'-fps_mode','cfr');
   args.push('-movflags','+faststart','-t',String(duration),'-progress','pipe:1','-nostats',file);
   await run(FFMPEG,args,{ signal,timeout:7200000,onProgress:text=>{ const matches=[...text.matchAll(/out_time_us=(\d+)/g)]; if(matches.length) progress?.(Math.min(90,Number(matches.at(-1)[1])/1e6/duration*90)); }});
