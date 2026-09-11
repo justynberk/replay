@@ -2,6 +2,16 @@
 
 Record your screen in your browser, edit the recording, and export a finished video. Replay runs on your own computer. Your library and media stay local unless you explicitly use an optional AI action.
 
+## Easiest setup: ChatGPT Work
+
+1. **Download the files.** [Download Replay as a ZIP](https://github.com/justynberk/replay/archive/refs/heads/main.zip) and unzip it.
+2. **Drag the extracted folder into ChatGPT Work** in the ChatGPT desktop app. Give it access to the local folder so it can install and run Replay.
+3. **Say: "Hey, run this app for me."**
+
+Follow any setup prompts, then open the browser link it gives you. If you need to attach the folder manually, use **Edit project > Add folder** in your project's menu.
+
+Prefer the terminal? Follow the [requirements](#requirements) and [install instructions](#install-and-run) below.
+
 **Browser-based local beta.** Install the source, start the local service, and open Replay in a desktop browser. No native app, account or API key is required for recording, editing or exporting. Viewer links work on your computer; they are not public internet links.
 
 ![Replay editor with transcript, preview and multitrack timeline](docs/screenshots/editor.png)
