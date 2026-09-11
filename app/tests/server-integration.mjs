@@ -8,6 +8,22 @@ import http from 'node:http';
 import { createReplayServer } from '../server/server.mjs';
 import { FFMPEG, run, probe, remapTranscript, editedDuration } from '../server/media.mjs';
 
+// Inspect the central directory of the small ZIP fixture without an OS utility.
+function zipEntryNames(bytes) {
+  const end=bytes.lastIndexOf(Buffer.from([0x50,0x4b,0x05,0x06]));
+  assert.ok(end>=0,'ZIP end record exists');
+  const count=bytes.readUInt16LE(end+10),size=bytes.readUInt32LE(end+12);
+  let offset=bytes.readUInt32LE(end+16);const start=offset,names=[];
+  for(let i=0;i<count;i++) {
+    assert.equal(bytes.readUInt32LE(offset),0x02014b50,'valid ZIP directory entry');
+    const length=bytes.readUInt16LE(offset+28),extra=bytes.readUInt16LE(offset+30),comment=bytes.readUInt16LE(offset+32);
+    names.push(bytes.subarray(offset+46,offset+46+length).toString('utf8'));
+    offset+=46+length+extra+comment;
+  }
+  assert.equal(offset,start+size,'complete ZIP central directory');
+  return names;
+}
+
 test('real import, edits, exports, persistence and local request isolation', {timeout:180000}, async t=>{
   const root=await mkdtemp(path.join(os.tmpdir(),'replay-test-'));
   const screen=path.join(root,'screen.mp4'),camera=path.join(root,'camera.mp4');
@@ -38,7 +54,7 @@ test('real import, edits, exports, persistence and local request isolation', {ti
   const captions=await(await fetch(base+completed.files.find(f=>f.name==='captions.srt').url)).text();assert.match(captions,/00:00:00,400 --> 00:00:01,300/);assert.match(captions,/Last sentence/);
   const json=await(await fetch(base+completed.files.find(f=>f.name==='project.json').url)).json();assert.deepEqual(json.resources,edited.resources);const notes=await(await fetch(base+completed.files.find(f=>f.name==='notes.md').url)).text();assert.match(notes,/Calibration worksheet: https:\/\/example.com\/worksheet/);assert.ok(Math.abs(json.duration-1.3)<.001);assert.ok(Math.abs(json.comments[0].time-.4)<.001);
   const rgb=path.join(root,'frame.rgb');await run(FFMPEG,['-nostdin','-v','error','-y','-ss','0.3','-i',file,'-frames:v','1','-pix_fmt','rgb24','-f','rawvideo',rgb]);const pixels=await readFile(rgb),pixel=(x,y)=>[...pixels.subarray((y*320+x)*3,(y*320+x)*3+3)];assert.ok(pixel(48,25).every(v=>v<15),'redaction is black');const camPixel=pixel(280,140);assert.ok(camPixel[0]>170&&camPixel[1]<60,'separate camera is rendered');
-  const archive=path.join(root,'.replay-data','exports',job.id,'replay-package.zip');const listing=await run('/usr/bin/unzip',['-l',archive]);assert.match(listing.stdout,/sources\/video.mp4/);assert.match(listing.stdout,/captions.srt/);
+  const archive=path.join(root,'.replay-data','exports',job.id,'replay-package.zip'),entries=zipEntryNames(await readFile(archive));assert.ok(entries.includes('sources/video.mp4'));assert.ok(entries.includes('captions.srt'));
   const silence=await(await request(`/api/assets/${a.id}/detect-silence`,'POST',{})).json();assert.ok(silence.ranges.some(r=>r.start<1.1&&r.end>1.5));assert.equal(service.store.find(a.id).edits.cuts.length,1,'silence detection does not mutate edits');
   if(!process.env.OPENAI_API_KEY)assert.equal((await request(`/api/assets/${a.id}/transcribe`,'POST',{})).status,503);
   const restored=await(await request(`/api/assets/${a.id}/versions/${edited.versions[0].id}/restore`,'POST',{})).json();assert.equal(restored.edits.speed,1);assert.equal(restored.edits.cuts.length,0);
